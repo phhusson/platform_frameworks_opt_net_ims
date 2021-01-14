@@ -50,7 +50,6 @@ import android.telephony.ims.aidl.IImsMmTelFeature;
 import android.telephony.ims.aidl.IImsRegistration;
 import android.telephony.ims.aidl.IImsRegistrationCallback;
 import android.telephony.ims.aidl.IImsSmsListener;
-import android.telephony.ims.aidl.IRcsConfigCallback;
 import android.telephony.ims.aidl.ISipTransport;
 import android.telephony.ims.feature.CapabilityChangeRequest;
 import android.telephony.ims.feature.ImsFeature;
@@ -1034,6 +1033,70 @@ public class ImsManager implements FeatureUpdates {
     }
 
     /**
+     * @return true if the user's setting for Voice over Cross SIM is enabled and
+     * false if it is not
+     */
+    public boolean isCrossSimCallingEnabledByUser() {
+        int setting = mSubscriptionManagerProxy.getIntegerSubscriptionProperty(
+                getSubId(), SubscriptionManager.CROSS_SIM_CALLING_ENABLED,
+                SUB_PROPERTY_NOT_INITIALIZED);
+
+        // SUB_PROPERTY_NOT_INITIALIZED indicates it's never set in sub db.
+        if (setting == SUB_PROPERTY_NOT_INITIALIZED) {
+            return false;
+        } else {
+            return setting == ProvisioningManager.PROVISIONING_VALUE_ENABLED;
+        }
+    }
+
+    /**
+     * @return true if Voice over Cross SIM is provisioned and enabled by user and platform.
+     * false if any of them is not true
+     */
+    public boolean isCrossSimCallingEnabled() {
+        boolean userEnabled = isCrossSimCallingEnabledByUser();
+        boolean platformEnabled = isCrossSimEnabledByPlatform();
+        boolean isProvisioned = isWfcProvisionedOnDevice();
+
+        log("isCrossSimCallingEnabled: platformEnabled = " + platformEnabled
+                + ", provisioned = " + isProvisioned
+                + ", userEnabled = " + userEnabled);
+        return userEnabled && platformEnabled && isProvisioned;
+    }
+
+    /**
+     * Sets the user's setting for whether or not Voice over Cross SIM is enabled.
+     */
+    public void setCrossSimCallingEnabled(boolean enabled) {
+        if (enabled && !isWfcProvisionedOnDevice()) {
+            log("setCrossSimCallingEnabled: Not possible to enable WFC due to provisioning.");
+            return;
+        }
+
+        int subId = getSubId();
+        if (isSubIdValid(subId)) {
+            mSubscriptionManagerProxy.setSubscriptionProperty(subId,
+                    SubscriptionManager.CROSS_SIM_CALLING_ENABLED,
+                    booleanToPropertyString(enabled));
+        } else {
+            loge("setCrossSimCallingEnabled: "
+                    + "invalid sub id, can not set Cross SIM setting in siminfo db; subId="
+                    + subId);
+        }
+        try {
+            if (isCrossSimCallingEnabled()) {
+                changeMmTelCapability(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE,
+                        ImsRegistrationImplBase.REGISTRATION_TECH_CROSS_SIM, true);
+            } else {
+                changeMmTelCapability(MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE,
+                        ImsRegistrationImplBase.REGISTRATION_TECH_CROSS_SIM, false);
+            }
+        } catch (ImsException e) {
+            loge("setCrossSimCallingEnabled(): ", e);
+        }
+    }
+
+    /**
      * Non-persistently change WFC enabled setting and WFC mode for slot
      *
      * @param enabled If true, WFC and WFC while roaming will be enabled for the associated
@@ -1365,6 +1428,19 @@ public class ImsManager implements FeatureUpdates {
                 isGbaValid();
     }
 
+    /**
+     * Returns a platform configuration for Cross SIM which may override the user
+     * setting per slot. Note: Cross SIM presumes that VoLTE is enabled (these are
+     * configuration settings which must be done correctly).
+     */
+    public boolean isCrossSimEnabledByPlatform() {
+        if (isWfcEnabledByPlatform()) {
+            return getBooleanCarrierConfig(
+                    CarrierConfigManager.KEY_CARRIER_CROSS_SIM_IMS_AVAILABLE_BOOL);
+        }
+        return false;
+    }
+
     public boolean isSuppServicesOverUtEnabledByPlatform() {
         TelephonyManager manager = (TelephonyManager) mContext.getSystemService(
                 Context.TELEPHONY_SERVICE);
@@ -1473,6 +1549,7 @@ public class ImsManager implements FeatureUpdates {
             CapabilityChangeRequest request = new CapabilityChangeRequest();
             updateVolteFeatureValue(request);
             updateWfcFeatureAndProvisionedValues(request);
+            updateCrossSimFeatureAndProvisionedValues(request);
             updateVideoCallFeatureValue(request);
             updateCallComposerFeatureValue(request);
             // Only turn on IMS for RTT if there's an active subscription present. If not, the
@@ -1611,6 +1688,21 @@ public class ImsManager implements FeatureUpdates {
         }
         setWfcModeInternal(mode);
         setWfcRoamingSettingInternal(roaming);
+    }
+
+    /**
+     * Update Cross SIM config
+     */
+    private void updateCrossSimFeatureAndProvisionedValues(CapabilityChangeRequest request) {
+        if (isCrossSimCallingEnabled()) {
+            request.addCapabilitiesToEnableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_CROSS_SIM);
+        } else {
+            request.addCapabilitiesToDisableForTech(
+                    MmTelFeature.MmTelCapabilities.CAPABILITY_TYPE_VOICE,
+                    ImsRegistrationImplBase.REGISTRATION_TECH_CROSS_SIM);
+        }
     }
 
 
@@ -2861,47 +2953,6 @@ public class ImsManager implements FeatureUpdates {
                 ProvisioningManager.PROVISIONING_VALUE_DISABLED;
         setProvisionedBoolNoException(ImsConfig.ConfigConstants.EAB_SETTING_ENABLED,
                 provisionStatus);
-    }
-
-    /**
-     * Adds a callback of RCS provisioning for a specified subscription.
-     * @param callback A {@link android.telephony.ims.aidl.IRcsConfigCallback}
-     *         for RCS provisioning change.
-     * @param subId The subscription that is associated with the callback.
-     * @throws IllegalStateException when the {@link ImsService} connection is not available.
-     * @throws IllegalArgumentException when the {@link IRcsConfigCallback} argument is null.
-     */
-    public void addRcsProvisioningCallbackForSubscription(IRcsConfigCallback callback, int subId) {
-        if (callback == null) {
-            throw new IllegalArgumentException("provisioning callback can't be null");
-        }
-
-        mMmTelConnectionRef.get().addRcsProvisioningCallbackForSubscription(callback, subId);
-        log("Capability Callback registered for subscription.");
-    }
-
-    /**
-     * Removes a previously registered {@link android.telephony.ims.aidl.IRcsConfigCallback}.
-     * @throws IllegalStateException when the {@link ImsService} connection is not available.
-     * @throws IllegalArgumentException when the {@link IRcsConfigCallback} argument is null.
-     */
-    public void removeRcsProvisioningCallbackForSubscription(
-            IRcsConfigCallback callback, int subId) {
-        if (callback == null) {
-            throw new IllegalArgumentException("provisioning callback can't be null");
-        }
-
-        mMmTelConnectionRef.get().removeRcsProvisioningCallbackForSubscription(callback, subId);
-    }
-
-    /**
-     * Removes all RCS provisioning callbacks
-     *
-     * <p>This method is called when default message application change or some other event
-     * which need force to remove all RCS provisioning callbacks.
-     */
-    public void clearRcsProvisioningCallbacks() {
-        mMmTelConnectionRef.get().clearRcsProvisioningCallbacks();
     }
 
     private boolean isDataEnabled() {
