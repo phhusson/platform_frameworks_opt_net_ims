@@ -172,14 +172,14 @@ public class PidfParserUtils {
         // Duplex element
         List<String> supportedDuplexModes = serviceCaps.getSupportedDuplexModes();
         List<String> UnsupportedDuplexModes = serviceCaps.getUnsupportedDuplexModes();
-        if (supportedDuplexModes != null && !supportedDuplexModes.isEmpty() &&
-                UnsupportedDuplexModes != null && !UnsupportedDuplexModes.isEmpty()) {
+        if ((supportedDuplexModes != null && !supportedDuplexModes.isEmpty()) ||
+                (UnsupportedDuplexModes != null && !UnsupportedDuplexModes.isEmpty())) {
             Duplex duplex = new Duplex();
             if (!supportedDuplexModes.isEmpty()) {
                 duplex.addSupportedType(supportedDuplexModes.get(0));
             }
             if (!UnsupportedDuplexModes.isEmpty()) {
-                duplex.addSupportedType(UnsupportedDuplexModes.get(0));
+                duplex.addNotSupportedType(UnsupportedDuplexModes.get(0));
             }
             servCapsElement.addElement(duplex);
         }
@@ -296,6 +296,17 @@ public class PidfParserUtils {
         RcsContactUceCapability.PresenceBuilder builder =
                 new RcsContactUceCapability.PresenceBuilder(
                         contact, RcsContactUceCapability.SOURCE_TYPE_NETWORK, requestResult);
+        return builder.build();
+    }
+
+    /**
+     * Get the RcsContactUceCapability instance which the request result is NOT FOUND.
+     */
+    public static RcsContactUceCapability getNotFoundContactCapabilities(Uri contact) {
+        RcsContactUceCapability.PresenceBuilder builder =
+                new RcsContactUceCapability.PresenceBuilder(contact,
+                        RcsContactUceCapability.SOURCE_TYPE_NETWORK,
+                        RcsContactUceCapability.REQUEST_RESULT_NOT_FOUND);
         return builder.build();
     }
 }
